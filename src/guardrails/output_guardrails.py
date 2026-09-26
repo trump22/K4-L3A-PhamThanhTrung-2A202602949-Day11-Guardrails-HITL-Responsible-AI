@@ -41,12 +41,14 @@ def content_filter(response: str) -> dict:
 
     # PII patterns to check
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        "VN_phone": r"\b0\d{9,10}\b",
+        "email": r"[\w.\-+]+@[\w.\-]+\.[a-zA-Z]{2,}",
+        "CCCD_9": r"\b\d{9}\b",
+        "CCCD_12": r"\b\d{12}\b",
+        "api_key": r"\bsk-[a-zA-Z0-9\-_]{8,}\b",
+        "password_field": r"\bpassword\s*[:=]\s*\S+",
+        "admin_password_value": r"\badmin\s*123\b",
+        "db_host": r"\bdb\.[\w.\-]+\.\w+:\d+\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -172,16 +174,34 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Run regex content filter to redact PII / secrets
+        filter_result = content_filter(response_text)
+        if not filter_result["safe"]:
+            self.redacted_count += 1
+            safe_text = filter_result["redacted"]
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=safe_text)],
+            )
+            response_text = safe_text  # use redacted for further checks
 
-        return llm_response  # TODO: modify if needed
+        # 2. Optionally run LLM judge
+        if self.use_llm_judge:
+            import asyncio
+            judge_result = asyncio.get_event_loop().run_until_complete(
+                llm_safety_check(response_text)
+            )
+            if not judge_result.get("safe", True):
+                self.blocked_count += 1
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="I cannot share internal system details. "
+                             "Please contact VinBank support for assistance."
+                    )],
+                )
+
+        return llm_response
 
 
 # ============================================================
